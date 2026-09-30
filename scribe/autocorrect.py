@@ -21,6 +21,11 @@ def load_corrections(path: Path) -> list[tuple[str, str]]:
     return rules
 
 
+def vocab_terms(rules: list[tuple[str, str]]) -> list[str]:
+    """Right-hand sides worth hinting to Whisper: names/jargon (contain a capital or digit), not phrases like 'going to'."""
+    return list(dict.fromkeys(r for _, r in rules if r and re.search(r"[A-Z0-9]", r)))
+
+
 def apply_rules(text: str, rules: list[tuple[str, str]]) -> str:
     for wrong, right in sorted(rules, key=lambda r: -len(r[0])):
         text = re.sub(rf"(?<!\w){re.escape(wrong)}(?!\w)", lambda _: right, text, flags=re.I)

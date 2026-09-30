@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live captions</title>
+<style>
+:root{--bg:#000;--fg:#fff;--dim:#b8b8b8;--size:44px;--lines:4}
+body[data-theme=yellow]{--bg:#000;--fg:#ffe600;--dim:#c9b800}
+body[data-theme=light]{--bg:#fff;--fg:#000;--dim:#555}
+body[data-theme=blue]{--bg:#001a4d;--fg:#fff;--dim:#b6c4e6}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,"Helvetica Neue",Arial,sans-serif;display:flex;flex-direction:column}
+body.serif{font-family:Georgia,"Times New Roman",serif}
+#stage{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:flex-end;padding:2vh 4vw;overflow:hidden}
+#log{font-size:var(--size);line-height:1.3;font-weight:600;overflow:hidden;
+  max-height:calc(var(--size)*1.3*var(--lines) + 1.2em);display:flex;flex-direction:column;justify-content:flex-end}
+body.all #log{max-height:none;overflow-y:auto;justify-content:flex-start}
+#log p{margin:0 0 .5em}
+#partial{color:var(--fg)}
+#hint{color:var(--dim);font-size:calc(var(--size)*.5);font-weight:400}
+#bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:rgba(128,128,128,.2);font-size:16px}
+body.embed #bar,body.nobar #bar{display:none}
+#bar button{font:inherit;color:var(--fg);background:transparent;border:2px solid var(--dim);border-radius:8px;padding:6px 12px;min-height:40px;cursor:pointer}
+#bar button:focus-visible{outline:3px solid var(--fg);outline-offset:2px}
+#conn{margin-left:auto;color:var(--dim)}
+.sr{position:absolute;left:-9999px}
+</style></head>
+<body>
+<div id="stage">
+  <div id="log" role="log" aria-live="polite" aria-label="Live captions"></div>
+  <div id="hint">Waiting for captions to start…</div>
+</div>
+<div id="bar" role="toolbar" aria-label="Caption display settings">
+  <button id="smaller" aria-label="Smaller text">A−</button>
+  <button id="bigger" aria-label="Larger text">A+</button>
+  <button id="theme" aria-label="Change colours">Colours</button>
+  <button id="lines" aria-label="Change number of lines">Lines</button>
+  <button id="font" aria-label="Change font">Font</button>
+  <button id="full" aria-label="Full screen">Full screen</button>
+  <span id="conn" role="status"></span>
+</div>
+<script>
+const $=id=>document.getElementById(id), body=document.body;
+const Q=new URLSearchParams(location.search);
+if(Q.has('embed'))body.classList.add('embed');
+const THEMES=['dark','yellow','light','blue'], LINES=[2,3,4,6,'all'];
+let S={size:44,theme:'dark',lines:4,serif:false};
+try{Object.assign(S,JSON.parse(localStorage.getItem('captionPrefs')||'{}'))}catch(e){}
+function apply(){
+  body.dataset.theme=S.theme;body.classList.toggle('serif',!!S.serif);body.classList.toggle('all',S.lines==='all');
+  document.documentElement.style.setProperty('--size',S.size+'px');
+  document.documentElement.style.setProperty('--lines',S.lines==='all'?4:S.lines);
+  $('lines').textContent='Lines: '+S.lines;$('font').textContent=S.serif?'Font: serif':'Font: sans';
+  try{localStorage.setItem('captionPrefs',JSON.stringify(S))}catch(e){}
+  const l=$('log');l.scrollTop=l.scrollHeight;
+}
+$('smaller').onclick=()=>{S.size=Math.max(16,S.size-4);apply()};
+$('bigger').onclick=()=>{S.size=Math.min(160,S.size+4);apply()};
+$('theme').onclick=()=>{S.theme=THEMES[(THEMES.indexOf(S.theme)+1)%THEMES.length];apply()};
+$('lines').onclick=()=>{S.lines=LINES[(LINES.indexOf(S.lines)+1)%LINES.length];apply()};
+$('font').onclick=()=>{S.serif=!S.serif;apply()};
+$('full').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen?.();
+addEventListener('keydown',e=>{if(e.key==='h')body.classList.toggle('nobar');
+  if(e.key==='+'||e.key==='=')$('bigger').click();if(e.key==='-')$('smaller').click();});
+apply();
+
+// Render incrementally (by absolute paragraph number) so screen readers only hear new text.
+const log=$('log'),els=new Map(),partialEl=document.createElement('p');
+partialEl.id='partial';partialEl.setAttribute('aria-hidden','true');
+function render(j){
+  j.paras.forEach((t,k)=>{
+    const i=j.first+k;let p=els.get(i);
+    if(!p){p=document.createElement('p');els.set(i,p);log.insertBefore(p,partialEl.parentNode?partialEl:null)}
+    if(p.textContent!==t)p.textContent=t;
+  });
+  for(const [i,p] of els)if(i<j.first){p.remove();els.delete(i)}
+  partialEl.textContent=j.partial||'';
+  if(j.partial&&!partialEl.parentNode)log.appendChild(partialEl);
+  if(!j.partial&&partialEl.parentNode)partialEl.remove();
+  $('hint').textContent=(j.paras.length||j.partial)?'':(j.running?'Listening…':'Waiting for captions to start…');
+  if(S.lines==='all')log.scrollTop=log.scrollHeight;
+}
+let v=-1,fails=0;
+async function poll(){
+  try{
+    const r=await fetch('/api/captions?since='+v,{cache:'no-store'});const j=await r.json();
+    fails=0;$('conn').textContent='';
+    if(!j.same){v=j.v;render(j)}
+  }catch(e){if(++fails>3)$('conn').textContent='Reconnecting…'}
+  setTimeout(poll,500);
+}
+poll();
+try{const wl=()=>navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{});wl();document.addEventListener('visibilitychange',()=>{if(!document.hidden)wl()})}catch(e){}
+</script></body></html>

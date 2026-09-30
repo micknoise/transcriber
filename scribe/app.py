@@ -27,7 +27,7 @@ def _rules():
 
 def _vocab(rules):
     """Correct spellings double as a Whisper prompt so they're heard right in the first place."""
-    return ", ".join(dict.fromkeys(r for _, r in rules if r))[:600]
+    return ", ".join(autocorrect.vocab_terms(rules))[:600]
 
 
 class UserError(Exception):

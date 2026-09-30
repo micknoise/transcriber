@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live captions — presenter</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--mut:#6e6e73;--line:#d2d2d7;--acc:#0a66ff;--rec:#e5232e}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f2f2f7;--mut:#98989d;--line:#3a3a3c;--acc:#4c8dff}}
+body{font:15px/1.5 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:860px;margin:0 auto;padding:24px 16px}
+[hidden]{display:none!important}
+h1{font-size:20px;margin:0 0 4px}
+button,select,input,textarea{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:8px 14px}
+button{cursor:pointer}button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.stop{background:var(--rec);border-color:var(--rec);color:#fff}button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.mut{color:var(--mut);font-size:13px}
+textarea{width:100%;box-sizing:border-box;min-height:90px}
+#meter{width:160px;height:10px;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+#meter i{display:block;height:100%;width:0;background:var(--acc);transition:width .1s}
+iframe{width:100%;height:210px;border:1px solid var(--line);border-radius:8px;margin-top:8px}
+#share{display:flex;gap:16px;align-items:center}#share img{width:120px;height:120px;background:#fff;border-radius:6px}
+</style></head><body>
+<h1>Live captions <span class="mut">— runs on this Mac</span></h1>
+<div class="mut">Start, then put the caption window on your projector / second screen, or share the link so people can read on their own devices.</div>
+<div class="row">
+  <button id="go" class="primary">Start captions</button>
+  <button id="pop">Open caption window</button>
+  <select id="mic" title="Microphone"></select>
+  <span id="meter" title="Input level"><i></i></span>
+</div>
+<div class="row">
+  <select id="model" title="Smaller = lower delay, bigger = more accurate">
+    <option value="small.en">small.en — English, recommended</option><option value="base.en">base.en — English, fastest</option>
+    <option value="small">small — any language</option><option value="large-v3-turbo">large-v3-turbo — most accurate, slower</option></select>
+  <input id="lang" value="en" size="6" title="Language code, or blank to auto-detect (unreliable for short phrases)">
+  <span id="modelstatus" class="mut"></span>
+</div>
+<details open><summary>Terms for this talk</summary>
+  <p class="mut">Names, jargon, slide vocabulary. One per line: <code>Kubernetes</code> (fixes spelling/casing and helps recognition) or <code>wrong =&gt; right</code>. Your corrections dictionary also applies.</p>
+  <textarea id="terms" placeholder="Nyquist&#10;Dr Okonkwo&#10;convolution neural network => convolutional neural network"></textarea></details>
+<div id="status" class="mut" role="status" style="margin:10px 0"></div>
+<div id="share" hidden><img id="qr" alt="QR code for the audience caption link"><div><div>Audience link (same Wi-Fi):</div><div><b id="url"></b></div></div></div>
+<div id="nolan" class="mut" hidden>Captions are only visible on this Mac. To share them with phones and laptops, restart with <code>./run-captions.sh --lan</code>.</div>
+<iframe id="preview" src="/view?embed=1" title="Caption preview"></iframe>
+<script>
+const $=id=>document.getElementById(id),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let ctx,node,mstream,seq=0,q=[],sending=false,running=false,quietSince=0,wake=null,statT;
+try{const s=JSON.parse(localStorage.getItem('capConsole')||'{}');['model','lang','terms'].forEach(k=>s[k]!=null&&($(k).value=s[k]))}catch(e){}
+const save=()=>{try{localStorage.setItem('capConsole',JSON.stringify({model:$('model').value,lang:$('lang').value,terms:$('terms').value}))}catch(e){}};
+['model','lang','terms'].forEach(k=>$(k).onchange=save);
+const status=s=>$('status').textContent=s;
+
+fetch('/api/info').then(r=>r.json()).then(i=>{
+  if(i.lan){$('share').hidden=false;$('url').textContent=i.lan;$('qr').src='/qr.svg?u='+encodeURIComponent(i.lan)}else $('nolan').hidden=false});
+$('pop').onclick=()=>window.open('/view','captions','popup,width=1100,height=420');
+
+async function mics(){
+  try{const d=(await navigator.mediaDevices.enumerateDevices()).filter(x=>x.kind==='audioinput'),cur=$('mic').value;
+    $('mic').innerHTML='';d.forEach(x=>{const o=document.createElement('option');o.value=x.deviceId;o.textContent=x.label||'Microphone';$('mic').appendChild(o)});
+    if(cur)$('mic').value=cur}catch(e){}
+}
+mics();
+
+async function ensureModel(){
+  const m=$('model').value;await fetch('/api/model/'+m,{method:'POST'});
+  while(true){const j=await (await fetch('/api/model/'+m)).json();
+    if(j.status==='ready'){$('modelstatus').textContent='Model ready.';return}
+    if(j.status==='error')throw new Error('Model failed to load: '+j.error);
+    $('modelstatus').textContent='Downloading/loading model… first run only (progress is in the terminal).';await sleep(1500)}
+}
+
+const WORKLET=`class P extends AudioWorkletProcessor{
+constructor(){super();this.r=sampleRate/16000;this.p=0;this.a=0;this.n=0;this.o=[];this.pk=0}
+process(i){const c=i[0][0];if(!c)return true;
+for(let k=0;k<c.length;k++){const x=c[k];this.a+=x;this.n++;this.p++;const ax=x<0?-x:x;if(ax>this.pk)this.pk=ax;
+if(this.p>=this.r){this.p-=this.r;this.o.push(this.a/this.n);this.a=0;this.n=0}}
+if(this.o.length>=4000){const b=new Int16Array(this.o.length);for(let k=0;k<b.length;k++){const x=Math.max(-1,Math.min(1,this.o[k]));b[k]=x*32767}
+this.port.postMessage({b:b.buffer,pk:this.pk},[b.buffer]);this.o=[];this.pk=0}return true}}
+registerProcessor('pcm',P)`;
+
+async function pump(){
+  if(sending)return;sending=true;
+  while(q.length){
+    try{const r=await fetch('/api/audio?seq='+q[0].seq,{method:'POST',body:q[0].b});
+      if(r.status===410||r.status===409){throw {fatal:(await r.json()).error}}
+      if(!r.ok)throw new Error(r.status);q.shift()}
+    catch(e){if(e.fatal){q=[];sending=false;await stop(e.fatal);return}status('Connection to the app interrupted; retrying…');await sleep(1000)}
+  }
+  sending=false;
+}
+
+async function start(){
+  $('go').disabled=true;
+  try{
+    status('Loading model…');await ensureModel();save();
+    const r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:$('model').value,language:$('lang').value.trim(),terms:$('terms').value})});
+    if(!r.ok)throw new Error((await r.json()).error||r.statusText);
+    mstream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:$('mic').value?{exact:$('mic').value}:undefined,
+      echoCancellation:false,noiseSuppression:false,autoGainControl:true}});
+    mics();
+    ctx=new AudioContext();
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET],{type:'application/javascript'})));
+    const src=ctx.createMediaStreamSource(mstream);node=new AudioWorkletNode(ctx,'pcm');
+    const mute=ctx.createGain();mute.gain.value=0;src.connect(node);node.connect(mute).connect(ctx.destination);
+    seq=0;q=[];quietSince=Date.now();
+    node.port.onmessage=e=>{q.push({seq:seq++,b:e.data.b});pump();
+      const pk=e.data.pk;$('meter').firstChild.style.width=Math.min(100,pk*250)+'%';
+      if(pk>0.01)quietSince=Date.now();
+      if(Date.now()-quietSince>8000)status('No sound from this microphone for 8 s. Check the input selected above.')};
+    mstream.getAudioTracks().forEach(t=>t.onended=()=>stop('Microphone was disconnected.'));
+    running=true;$('go').textContent='Stop captions';$('go').className='stop';$('go').disabled=false;
+    try{wake=await navigator.wakeLock?.request('screen')}catch(e){}
+    status('Captions running.');statT=setInterval(poll,1000);
+  }catch(e){await stop('Could not start: '+(e.message||e))}
+}
+async function poll(){
+  try{const j=await (await fetch('/api/captions')).json();
+    if(j.error)status('Warning: '+j.error);
+    else if(running)status(`Captions running.${j.infer?` Transcribing each update in ${j.infer}s.`:''}`)}catch(e){}
+}
+async function stop(msg){
+  running=false;clearInterval(statT);$('meter').firstChild.style.width='0';
+  try{node&&node.disconnect();mstream&&mstream.getTracks().forEach(t=>t.stop());ctx&&ctx.close();wake&&wake.release()}catch(e){}
+  node=ctx=mstream=null;
+  while(sending&&q.length)await sleep(200);
+  try{await fetch('/api/stop',{method:'POST'})}catch(e){}
+  $('go').textContent='Start captions';$('go').className='primary';$('go').disabled=false;
+  status(msg||'Stopped. Transcript saved to ~/Transcripts.');
+}
+$('go').onclick=()=>running?stop():start();
+addEventListener('beforeunload',e=>{if(running){e.preventDefault();e.returnValue=''}});
+</script></body></html>

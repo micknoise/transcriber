@@ -5,7 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-MLX_MODELS = {"tiny": "mlx-community/whisper-tiny-mlx", "base": "mlx-community/whisper-base-mlx",
+MLX_MODELS = {"tiny.en": "mlx-community/whisper-tiny.en-mlx", "base.en": "mlx-community/whisper-base.en-mlx",
+              "small.en": "mlx-community/whisper-small.en-mlx", "tiny": "mlx-community/whisper-tiny-mlx", "base": "mlx-community/whisper-base-mlx",
               "small": "mlx-community/whisper-small-mlx", "medium": "mlx-community/whisper-medium-mlx",
               "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
               "large-v3": "mlx-community/whisper-large-v3-mlx"}
@@ -72,22 +73,23 @@ def load_async(model: str) -> dict:
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
 
 
-def transcribe(path: str, model: str = "large-v3-turbo", language: str | None = None,
+def transcribe(audio, model: str = "large-v3-turbo", language: str | None = None,
                vocab: str = "") -> list[Segment]:
-    return _pool.submit(_transcribe, path, model, language, vocab).result()
+    return _pool.submit(_transcribe, audio, model, language, vocab).result()
 
 
-def _transcribe(path: str, model: str = "large-v3-turbo", language: str | None = None,
-               vocab: str = "") -> list[Segment]:
-    """vocab is fed to Whisper as a prompt so names/jargon are spelled correctly."""
+def _transcribe(audio, model: str = "large-v3-turbo", language: str | None = None,
+                vocab: str = "") -> list[Segment]:
+    """audio: a file path, or a 16 kHz mono float32 numpy array.
+    vocab is fed to Whisper as a prompt so names/jargon are spelled correctly."""
     prompt = vocab or None
     if _use_mlx():
         import mlx_whisper
-        r = mlx_whisper.transcribe(path, path_or_hf_repo=MLX_MODELS.get(model, model), language=language,
+        r = mlx_whisper.transcribe(audio, path_or_hf_repo=MLX_MODELS.get(model, model), language=language,
                                    initial_prompt=prompt, condition_on_previous_text=False)
         return [Segment(s["start"], s["end"], s["text"].strip()) for s in r["segments"]]
     ensure_model(model)
-    segs, _ = _fw_cache[model].transcribe(path, language=language, initial_prompt=prompt,
+    segs, _ = _fw_cache[model].transcribe(audio, language=language, initial_prompt=prompt,
                                           vad_filter=True, condition_on_previous_text=False)
     return [Segment(s.start, s.end, s.text.strip()) for s in segs]
 
