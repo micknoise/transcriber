@@ -33,6 +33,11 @@ def index():
     return send_from_directory(STATIC, "index.html")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 @app.get("/api/corrections")
 def get_corrections():
     _rules()

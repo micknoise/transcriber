@@ -51,10 +51,17 @@ async function send(blob,name){
 $('rec').onclick=async()=>{
   if(rec&&rec.state==='recording'){rec.stop();return}
   try{const s=await navigator.mediaDevices.getUserMedia({audio:true});
-    rec=new MediaRecorder(s);chunks=[];rec.ondataavailable=e=>chunks.push(e.data);
+    const mt=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+    rec=new MediaRecorder(s,mt?{mimeType:mt}:undefined);chunks=[];let dropped=false;
+    rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
+    s.getAudioTracks().forEach(t=>t.onended=()=>{if(rec.state==='recording'){dropped=true;rec.stop()}});
     rec.onstop=()=>{s.getTracks().forEach(t=>t.stop());clearInterval(tick);$('timer').textContent='';
-      $('rec').textContent='● Record';$('rec').className='primary';send(new Blob(chunks,{type:rec.mimeType}),'rec.webm')};
-    rec.start();t0=Date.now();$('rec').textContent='■ Stop';$('rec').className='rec';
+      $('rec').textContent='● Record';$('rec').className='primary';
+      const type=rec.mimeType||mt||'audio/webm',ext=type.includes('mp4')?'m4a':'webm';
+      if(!chunks.length){status('Microphone stream stopped before any audio was captured. Close other apps using the mic, check System Settings > Privacy > Microphone, or try Chrome.');return}
+      if(dropped)status('Mic was interrupted; transcribing what was captured…');
+      send(new Blob(chunks,{type}),'rec.'+ext)};
+    rec.start(1000);t0=Date.now();$('rec').textContent='■ Stop';$('rec').className='rec';
     tick=setInterval(()=>{const t=(Date.now()-t0)/1000|0;$('timer').textContent=`${t/60|0}:${String(t%60).padStart(2,'0')}`},500);
   }catch(e){status('Microphone unavailable: '+e.message)}
 };
