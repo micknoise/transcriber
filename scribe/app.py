@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from . import autocorrect, engine
+from . import autocorrect, engine, session
 
 HOME = Path(os.environ.get("SCRIBE_HOME", Path.home() / "Transcripts"))
 CORRECTIONS = HOME / "corrections.txt"
@@ -69,6 +69,46 @@ def model_status(name):
 @app.post("/api/model/<path:name>")
 def model_load(name):
     return jsonify(engine.load_async(name))
+
+
+def _session(sid):
+    sess = session.get(HOME, sid, _rules)
+    if sess is None:
+        raise UserError("Unknown session.", 404)
+    return sess
+
+
+@app.post("/api/session")
+def session_new():
+    o = request.get_json() or {}
+    opts = {k: o.get(k) for k in ("model", "language", "fillers", "timestamps", "llm")}
+    sess = session.create(HOME, opts, _vocab(_rules()), o.get("ext", "webm"), _rules)
+    return jsonify(id=sess.id)
+
+
+@app.post("/api/session/<sid>/chunk")
+def session_chunk(sid):
+    try:
+        _session(sid).append(int(request.args["seq"]), request.get_data())
+    except session.SeqGap as e:
+        raise UserError(str(e), 409)
+    return jsonify(ok=True)
+
+
+@app.post("/api/session/<sid>/finish")
+def session_finish(sid):
+    _session(sid).finish()
+    return jsonify(ok=True)
+
+
+@app.get("/api/session/<sid>")
+def session_get(sid):
+    return jsonify(_session(sid).snapshot())
+
+
+@app.get("/api/sessions/unfinished")
+def sessions_unfinished():
+    return jsonify(session.list_unfinished(HOME))
 
 
 @app.get("/favicon.ico")

@@ -2,6 +2,7 @@
 import os
 import platform
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 MLX_MODELS = {"tiny": "mlx-community/whisper-tiny-mlx", "base": "mlx-community/whisper-base-mlx",
@@ -66,7 +67,17 @@ def load_async(model: str) -> dict:
     return {"status": "loading"}
 
 
+# MLX arrays/streams are tied to the thread that created them, and Flask serves each request on a new
+# thread, so all inference runs on one dedicated thread (which also serialises concurrent jobs).
+_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
+
+
 def transcribe(path: str, model: str = "large-v3-turbo", language: str | None = None,
+               vocab: str = "") -> list[Segment]:
+    return _pool.submit(_transcribe, path, model, language, vocab).result()
+
+
+def _transcribe(path: str, model: str = "large-v3-turbo", language: str | None = None,
                vocab: str = "") -> list[Segment]:
     """vocab is fed to Whisper as a prompt so names/jargon are spelled correctly."""
     prompt = vocab or None
