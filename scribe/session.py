@@ -18,8 +18,9 @@ from pathlib import Path
 from . import autocorrect, engine
 
 log = logging.getLogger(__name__)
-MIN_TAIL = 20.0   # seconds of new audio to accumulate before transcribing
-TICK = 5.0        # worker poll interval
+MIN_PARTIAL = 3.0  # seconds of new audio before showing tentative (grey) text
+MIN_TAIL = 15.0    # seconds of new audio before segments are committed for good
+TICK = 2.0         # worker poll interval
 IDLE_EXIT = 600   # worker gives up after this long without new audio (session stays recoverable)
 ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}_[0-9a-f]{4}$")
 
@@ -90,6 +91,7 @@ class Session:
         self.thread = None
         self.error = None
         self._live = (-1, "")
+        self.partial = ""  # tentative text for audio not yet committed
 
     # ---- persistence -------------------------------------------------------------------------------
     def _save_meta(self):
@@ -161,23 +163,30 @@ class Session:
         wav = self.dir / "tail.wav"
         extract(self.audio, start, wav)
         dur = max((wav.stat().st_size if wav.exists() else 0) - 44, 0) / 32000
-        if dur < (0.5 if final else MIN_TAIL):
+        if dur < (0.5 if final else MIN_PARTIAL):
+            self.partial = ""
             return
         opts = self.meta["opts"]
         vocab = self.meta["vocab"]
         ctx = " ".join(s.text for s in self.segments)[-(500 - len(vocab)):] if self.segments else ""
+        t0 = time.time()
         segs = engine.transcribe(str(wav), model=opts.get("model", "large-v3-turbo"),
                                  language=opts.get("language") or None, vocab=f"{ctx} {vocab}".strip())
         segs = [s for s in segs if s.text.strip()]
-        # Unless finishing, hold back a last segment that touches the end of the audio: it may be cut off.
-        if not final and segs and segs[-1].end > dur - 2.0:
-            segs = segs[:-1]
+        # A segment touching the end of the audio may be cut off mid-word, so it stays tentative until
+        # a pause follows it. Commit only once there's enough audio that context loss at the cut is small.
+        done = segs if final else [s for s in segs if s.end <= dur - 2.0]
+        commit = done if (final or dur >= MIN_TAIL) else []
+        tentative = [s for s in segs if s not in commit]
+        log.info("session %s: %.1fs of new audio -> %d segments (%d committed) in %.1fs",
+                 self.id, dur, len(segs), len(commit), time.time() - t0)
         with self.lock:
-            if segs:
-                self.segments += [engine.Segment(s.start + start, s.end + start, s.text) for s in segs]
+            self.partial = " ".join(s.text for s in tentative)
+            if commit:
+                self.segments += [engine.Segment(s.start + start, s.end + start, s.text) for s in commit]
                 self.meta["cursor"] = self.segments[-1].end
                 self._save_segments()
-            elif dur > 40:  # long silence: skip ahead rather than re-transcribing it every tick
+            elif not segs and dur > 40:  # long silence: skip ahead rather than re-transcribing it every tick
                 self.meta["cursor"] = start + dur - 2.0
             self._save_meta()
 
@@ -190,6 +199,7 @@ class Session:
         (self.home / f"{self.id}.txt").write_text(text + "\n", encoding="utf-8")
         (self.home / f"{self.id}.raw.txt").write_text(raw + "\n", encoding="utf-8")
         with self.lock:
+            self.partial = ""
             self.meta.update(done=True, saved=str(self.home / f"{self.id}.txt"))
             self._save_meta()
 
@@ -209,4 +219,6 @@ class Session:
                 self._live = (len(segs), autocorrect.clean(raw, self.rules_fn(),
                                                            remove_fillers=bool(m["opts"].get("fillers", True))))
             out["text"] = self._live[1]
+            out["partial"] = autocorrect.clean(self.partial, self.rules_fn(),
+                                               remove_fillers=bool(m["opts"].get("fillers", True))) if self.partial else ""
         return out

@@ -15,6 +15,8 @@ textarea{width:100%;box-sizing:border-box;min-height:320px;line-height:1.6}
 #drop{border:1px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--mut)}
 #drop.over{border-color:var(--acc)}
 details{margin-top:20px}
+#live{border:1px solid var(--line);border-radius:8px;padding:8px 14px;min-height:320px;max-height:60vh;overflow:auto;line-height:1.6;white-space:pre-wrap}
+#live .part{color:var(--mut);font-style:italic}
 </style></head><body>
 <h1>Scribe <span class="mut">— local transcription, nothing leaves this Mac</span></h1>
 <div class="row">
@@ -33,6 +35,7 @@ details{margin-top:20px}
 <button id="recover" hidden style="margin:8px 0"></button>
 <div id="model-status" class="mut"></div>
 <div id="status" class="mut"></div>
+<div id="live" hidden></div>
 <textarea id="out" placeholder="Transcript appears here (editable)"></textarea>
 <div class="row"><button id="copy">Copy</button><button id="showraw">Show raw</button><span id="saved" class="mut"></span></div>
 <details><summary>Corrections dictionary</summary>
@@ -83,16 +86,22 @@ async function finish(){
   while(true){try{const r=await fetch(`/api/session/${sid}/finish`,{method:'POST'});if(r.ok)break}catch(e){}await sleep(2000)}
   watch(sid);
 }
+function showLive(text,partial){
+  const d=$('live'),atEnd=d.scrollTop+d.clientHeight>=d.scrollHeight-20;
+  $('out').hidden=true;d.hidden=false;d.textContent=text;
+  if(partial){const sp=document.createElement('span');sp.className='part';sp.textContent=(text?' ':'')+partial;d.appendChild(sp)}
+  if(atEnd)d.scrollTop=d.scrollHeight;
+}
 function watch(id){
   clearInterval(pollT);$('rec').disabled=true;
   const tick=async()=>{
     try{const j=await (await fetch('/api/session/'+id)).json();
       if(j.error&&j.status!=='done')$('status').textContent='Warning: '+j.error;
-      if(j.status==='done'){clearInterval(pollT);last=j;$('out').value=j.text;$('saved').textContent='Saved '+j.saved;
+      if(j.status==='done'){clearInterval(pollT);last=j;$('live').hidden=true;$('out').hidden=false;$('out').value=j.text;$('saved').textContent='Saved '+j.saved;
         status('Done.');$('rec').disabled=false;sid=null;return}
-      $('out').value=j.text||'';$('out').scrollTop=1e9;
-      if(!j.error)status((j.status==='finalizing'?'Finishing… ':'Recording — live transcript. ')+
-        `${(j.transcribed_seconds/60).toFixed(1)} min transcribed`)
+      showLive(j.text||'',j.partial||'');
+      if(!j.error)status(j.text||j.partial?(j.status==='finalizing'?'Finishing… ':'Recording — grey text is tentative. ')+
+        `${(j.transcribed_seconds/60).toFixed(1)} min finalised`:'Listening… first text appears after a few seconds of speech.')
     }catch(e){}
   };
   pollT=setInterval(tick,2000);tick();

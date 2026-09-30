@@ -44,6 +44,7 @@ def test_live_session_streams_commits_and_recovers(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "CORRECTIONS", tmp_path / "corrections.txt")
     monkeypatch.setattr(session, "TICK", 0.05)
     monkeypatch.setattr(session, "MIN_TAIL", 5)
+    monkeypatch.setattr(session, "MIN_PARTIAL", 1)
 
     def fake_extract(audio, start, dst):  # pretend 1 byte of audio == 1 second
         secs = max(audio.stat().st_size - start, 0)
@@ -51,13 +52,21 @@ def test_live_session_streams_commits_and_recovers(tmp_path, monkeypatch):
 
     def fake_transcribe(path, **kw):  # one 4s utterance every 6s of tail audio
         dur = (__import__("os").path.getsize(path) - 44) / 32000
-        return [engine.Segment(t, t + 4, f"um line {int(t)}") for t in range(0, int(dur) - 3, 6)]
+        return [engine.Segment(t, min(t + 4, dur), f"um line {int(t)}") for t in range(0, int(dur), 6)]
 
     monkeypatch.setattr(session, "extract", fake_extract)
     monkeypatch.setattr(engine, "transcribe", fake_transcribe)
     c = appmod.app.test_client()
     sid = c.post("/api/session", json={"ext": "webm", "fillers": True}).get_json()["id"]
-    for i in range(20):
+    for i in range(3):  # 3s of audio: too short to commit, but tentative text should already show
+        assert c.post(f"/api/session/{sid}/chunk?seq={i}", data=b"x").status_code == 200
+    for _ in range(60):
+        early = c.get(f"/api/session/{sid}").get_json()
+        if early.get("partial"):
+            break
+        time.sleep(0.05)
+    assert early["partial"] and early["transcribed_seconds"] == 0
+    for i in range(3, 20):
         assert c.post(f"/api/session/{sid}/chunk?seq={i}", data=b"x").status_code == 200
     assert c.post(f"/api/session/{sid}/chunk?seq=5", data=b"x").status_code == 200  # retry: ignored
     assert c.post(f"/api/session/{sid}/chunk?seq=25", data=b"x").status_code == 409  # gap: rejected

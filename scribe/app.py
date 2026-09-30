@@ -1,4 +1,5 @@
 """Local web app: record or upload audio, get a transcript that is auto-corrected. Runs on 127.0.0.1 only."""
+import logging
 import os
 import subprocess
 import tempfile
@@ -160,6 +161,7 @@ def transcribe():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     engine.load_async(os.environ.get("SCRIBE_MODEL", "large-v3-turbo"))  # start downloading immediately
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5055)))
 
