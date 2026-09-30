@@ -58,7 +58,7 @@ async function send(blob,name){
   const fd=new FormData();fd.append('audio',blob,name);fd.append('model',$('model').value);
   fd.append('language',$('lang').value.trim());fd.append('fillers',$('fillers').checked?1:0);
   fd.append('timestamps',$('stamps').checked?1:0);fd.append('llm',$('llm').value.trim());
-  try{const r=await fetch('/api/transcribe',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());
+  try{const r=await fetch('/api/transcribe',{method:'POST',body:fd});if(!r.ok){let m;try{m=(await r.json()).error}catch{m=r.statusText}throw new Error(m)}
     last=await r.json();$('out').value=last.text;$('saved').textContent='Saved '+last.saved;status('Done.');}
   catch(e){status('Error: '+e.message)}
 }

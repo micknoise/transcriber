@@ -1,5 +1,6 @@
 """Local web app: record or upload audio, get a transcript that is auto-corrected. Runs on 127.0.0.1 only."""
 import os
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,33 @@ def _rules():
 def _vocab(rules):
     """Correct spellings double as a Whisper prompt so they're heard right in the first place."""
     return ", ".join(dict.fromkeys(r for _, r in rules if r))[:600]
+
+
+class UserError(Exception):
+    def __init__(self, msg, code=400):
+        super().__init__(msg)
+        self.code = code
+
+
+@app.errorhandler(Exception)
+def on_error(e):
+    if isinstance(e, UserError):
+        return jsonify(error=str(e)), e.code
+    app.logger.exception("request failed")
+    return jsonify(error=f"{type(e).__name__}: {e}"[:500]), 500
+
+
+def _to_wav(src: str, dst: str) -> None:
+    """Normalise whatever the browser sent to 16 kHz mono wav; gives one clear error if it's unreadable."""
+    try:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", src, "-ac", "1", "-ar", "16000", dst],
+                           capture_output=True, timeout=600)
+    except FileNotFoundError:
+        raise UserError("ffmpeg isn't installed. Run `brew install ffmpeg` and restart.", 500)
+    if r.returncode != 0 or not os.path.getsize(dst):
+        raise UserError("Couldn't read that audio: the recording is empty or corrupt. If you were recording, "
+                        "the browser likely lost the microphone (quit other apps using the mic, check mic "
+                        "permission, or try Chrome). Uploading an audio file also works.", 422)
 
 
 @app.get("/")
@@ -69,11 +97,17 @@ def transcribe():
     suffix = Path(f.filename or "a.webm").suffix or ".webm"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         f.save(tmp.name)
+    wav = tmp.name + ".wav"
     try:
-        segs = engine.transcribe(tmp.name, model=opt.get("model", "large-v3-turbo"),
+        if os.path.getsize(tmp.name) < 1000:
+            raise UserError("No audio was received (the recording is empty). Check the microphone and try again.")
+        _to_wav(tmp.name, wav)
+        segs = engine.transcribe(wav, model=opt.get("model", "large-v3-turbo"),
                                  language=opt.get("language") or None, vocab=_vocab(rules))
     finally:
-        os.unlink(tmp.name)
+        for p in (tmp.name, wav):
+            if os.path.exists(p):
+                os.unlink(p)
     stamps = opt.get("timestamps") == "1"
     raw = engine.to_paragraphs(segs, stamps=stamps)
     text = autocorrect.clean(raw, rules, remove_fillers=opt.get("fillers", "1") == "1")

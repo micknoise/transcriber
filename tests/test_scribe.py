@@ -18,8 +18,19 @@ def test_paragraphs():
 def test_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "HOME", tmp_path)
     monkeypatch.setattr(appmod, "CORRECTIONS", tmp_path / "corrections.txt")
+    monkeypatch.setattr(appmod, "_to_wav", lambda src, dst: open(dst, "wb").close())
     monkeypatch.setattr(engine, "transcribe", lambda *a, **k: [engine.Segment(0, 1, "um open ai is gonna ship")])
     c = appmod.app.test_client()
-    r = c.post("/api/transcribe", data={"audio": (io.BytesIO(b"x"), "a.wav")}).get_json()
+    r = c.post("/api/transcribe", data={"audio": (io.BytesIO(b"x" * 2000), "a.wav")}).get_json()
     assert r["text"] == "OpenAI is going to ship"
     assert len(list(tmp_path.glob("*.txt"))) == 3  # corrections + transcript + raw
+
+
+def test_empty_and_corrupt_audio_give_clear_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "HOME", tmp_path)
+    monkeypatch.setattr(appmod, "CORRECTIONS", tmp_path / "corrections.txt")
+    c = appmod.app.test_client()
+    r = c.post("/api/transcribe", data={"audio": (io.BytesIO(b"x"), "rec.webm")})
+    assert r.status_code == 400 and "empty" in r.get_json()["error"]
+    r = c.post("/api/transcribe", data={"audio": (io.BytesIO(b"garbage" * 500), "rec.webm")})
+    assert r.status_code in (422, 500) and "error" in r.get_json()
