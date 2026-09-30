@@ -34,3 +34,51 @@ def test_empty_and_corrupt_audio_give_clear_errors(tmp_path, monkeypatch):
     assert r.status_code == 400 and "empty" in r.get_json()["error"]
     r = c.post("/api/transcribe", data={"audio": (io.BytesIO(b"garbage" * 500), "rec.webm")})
     assert r.status_code in (422, 500) and "error" in r.get_json()
+
+
+def test_live_session_streams_commits_and_recovers(tmp_path, monkeypatch):
+    import time
+    from scribe import session
+
+    monkeypatch.setattr(appmod, "HOME", tmp_path)
+    monkeypatch.setattr(appmod, "CORRECTIONS", tmp_path / "corrections.txt")
+    monkeypatch.setattr(session, "TICK", 0.05)
+    monkeypatch.setattr(session, "MIN_TAIL", 5)
+
+    def fake_extract(audio, start, dst):  # pretend 1 byte of audio == 1 second
+        secs = max(audio.stat().st_size - start, 0)
+        dst.write_bytes(b"\0" * (44 + int(secs * 32000)))
+
+    def fake_transcribe(path, **kw):  # one 4s utterance every 6s of tail audio
+        dur = (__import__("os").path.getsize(path) - 44) / 32000
+        return [engine.Segment(t, t + 4, f"um line {int(t)}") for t in range(0, int(dur) - 3, 6)]
+
+    monkeypatch.setattr(session, "extract", fake_extract)
+    monkeypatch.setattr(engine, "transcribe", fake_transcribe)
+    c = appmod.app.test_client()
+    sid = c.post("/api/session", json={"ext": "webm", "fillers": True}).get_json()["id"]
+    for i in range(20):
+        assert c.post(f"/api/session/{sid}/chunk?seq={i}", data=b"x").status_code == 200
+    assert c.post(f"/api/session/{sid}/chunk?seq=5", data=b"x").status_code == 200  # retry: ignored
+    assert c.post(f"/api/session/{sid}/chunk?seq=25", data=b"x").status_code == 409  # gap: rejected
+    assert (tmp_path / "sessions" / sid / "audio.webm").stat().st_size == 20
+
+    time.sleep(0.5)
+    live = c.get(f"/api/session/{sid}").get_json()
+    assert live["status"] == "recording" and live["transcribed_seconds"] > 0 and "Line" in live["text"]
+
+    session._registry.clear()  # simulate the app restarting mid-recording
+    c.post(f"/api/session/{sid}/finish")
+    for _ in range(100):
+        done = c.get(f"/api/session/{sid}").get_json()
+        if done["status"] == "done":
+            break
+        time.sleep(0.05)
+    assert done["status"] == "done" and "um" not in done["text"].lower().split()
+    assert (tmp_path / f"{sid}.txt").exists() and (tmp_path / f"{sid}.raw.txt").exists()
+    assert c.get("/api/session/not-a-real-id").status_code == 404
+
+
+def test_session_id_is_validated():
+    from scribe import session
+    assert not session.valid_id("../../etc")

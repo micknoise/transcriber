@@ -30,6 +30,7 @@ details{margin-top:20px}
   <label><input type="checkbox" id="stamps"> timestamps</label>
   <label>AI polish (Ollama model): <input id="llm" placeholder="e.g. llama3.1:8b" size="16"></label>
 </div>
+<button id="recover" hidden style="margin:8px 0"></button>
 <div id="model-status" class="mut"></div>
 <div id="status" class="mut"></div>
 <textarea id="out" placeholder="Transcript appears here (editable)"></textarea>
@@ -38,7 +39,7 @@ details{margin-top:20px}
   <p class="mut">One per line: <code>wrong =&gt; right</code>. Applied to every transcript; the right-hand spellings are also fed to Whisper as hints.</p>
   <textarea id="corr" style="min-height:160px"></textarea><div class="row"><button id="savecorr">Save</button></div></details>
 <script>
-const $=id=>document.getElementById(id);let rec,chunks,t0,tick,last={};
+const $=id=>document.getElementById(id);let rec,t0,timerT,last={};
 let ready=false,poll;
 async function watchModel(){
   clearInterval(poll);ready=false;const m=$('model').value,ms=$('model-status');
@@ -62,23 +63,65 @@ async function send(blob,name){
     last=await r.json();$('out').value=last.text;$('saved').textContent='Saved '+last.saved;status('Done.');}
   catch(e){status('Error: '+e.message)}
 }
+// ---- live recording: chunks stream to the server as they're captured; text appears as it's transcribed ----
+let sid=null,q=[],seq=0,sending=false,stopping=false,finishing=false,pollT=null;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const opts=()=>({model:$('model').value,language:$('lang').value.trim(),fillers:$('fillers').checked,
+  timestamps:$('stamps').checked,llm:$('llm').value.trim()});
+async function pump(){
+  if(sending)return;sending=true;
+  while(q.length){
+    try{const r=await fetch(`/api/session/${sid}/chunk?seq=${q[0].seq}`,{method:'POST',body:q[0].blob});
+      if(!r.ok)throw new Error(r.status);q.shift()}
+    catch(e){status('Connection to the app interrupted; retrying (audio is kept)…');await sleep(2000)}
+  }
+  sending=false;
+  if(stopping&&!finishing)finish();
+}
+async function finish(){
+  finishing=true;status('Finishing transcription…');
+  while(true){try{const r=await fetch(`/api/session/${sid}/finish`,{method:'POST'});if(r.ok)break}catch(e){}await sleep(2000)}
+  watch(sid);
+}
+function watch(id){
+  clearInterval(pollT);$('rec').disabled=true;
+  const tick=async()=>{
+    try{const j=await (await fetch('/api/session/'+id)).json();
+      if(j.error&&j.status!=='done')$('status').textContent='Warning: '+j.error;
+      if(j.status==='done'){clearInterval(pollT);last=j;$('out').value=j.text;$('saved').textContent='Saved '+j.saved;
+        status('Done.');$('rec').disabled=false;sid=null;return}
+      $('out').value=j.text||'';$('out').scrollTop=1e9;
+      if(!j.error)status((j.status==='finalizing'?'Finishing… ':'Recording — live transcript. ')+
+        `${(j.transcribed_seconds/60).toFixed(1)} min transcribed`)
+    }catch(e){}
+  };
+  pollT=setInterval(tick,2000);tick();
+}
 $('rec').onclick=async()=>{
   if(rec&&rec.state==='recording'){rec.stop();return}
   try{const s=await navigator.mediaDevices.getUserMedia({audio:true});
-    const mt=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));
-    rec=new MediaRecorder(s,mt?{mimeType:mt}:undefined);chunks=[];let dropped=false;
-    rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
-    s.getAudioTracks().forEach(t=>t.onended=()=>{if(rec.state==='recording'){dropped=true;rec.stop()}});
-    rec.onstop=()=>{s.getTracks().forEach(t=>t.stop());clearInterval(tick);$('timer').textContent='';
-      $('rec').textContent='● Record';$('rec').className='primary';
-      const type=rec.mimeType||mt||'audio/webm',ext=type.includes('mp4')?'m4a':'webm';
-      if(!chunks.length){status('Microphone stream stopped before any audio was captured. Close other apps using the mic, check System Settings > Privacy > Microphone, or try Chrome.');return}
-      if(dropped)status('Mic was interrupted; transcribing what was captured…');
-      send(new Blob(chunks,{type}),'rec.'+ext)};
+    const mt=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+    const ext=mt.includes('mp4')?'m4a':'webm';
+    sid=(await (await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...opts(),ext})})).json()).id;
+    q=[];seq=0;stopping=false;finishing=false;last={};$('out').value='';$('saved').textContent='';
+    rec=new MediaRecorder(s,mt?{mimeType:mt}:undefined);
+    rec.ondataavailable=e=>{if(e.data.size){q.push({seq:seq++,blob:e.data});pump()}};
+    s.getAudioTracks().forEach(t=>t.onended=()=>{if(rec.state==='recording'){status('Microphone was interrupted; saving what was captured…');rec.stop()}});
+    rec.onstop=()=>{s.getTracks().forEach(t=>t.stop());clearInterval(timerT);$('timer').textContent='';
+      $('rec').textContent='● Record';$('rec').className='primary';stopping=true;
+      if(!seq){status('Microphone stream stopped before any audio was captured. Close other apps using the mic, check System Settings > Privacy > Microphone, or try Chrome.');return}
+      if(!sending)finish()};
     rec.start(1000);t0=Date.now();$('rec').textContent='■ Stop';$('rec').className='rec';
-    tick=setInterval(()=>{const t=(Date.now()-t0)/1000|0;$('timer').textContent=`${t/60|0}:${String(t%60).padStart(2,'0')}`},500);
+    watch(sid);$('rec').disabled=false;
+    timerT=setInterval(()=>{const t=(Date.now()-t0)/1000|0;$('timer').textContent=`${t/60|0}:${String(t%60).padStart(2,'0')}`},500);
   }catch(e){status('Microphone unavailable: '+e.message)}
 };
+window.onbeforeunload=e=>{if(rec&&rec.state==='recording'){e.preventDefault();return''}};
+fetch('/api/sessions/unfinished').then(r=>r.json()).then(l=>{
+  if(!l.length)return;const u=l[l.length-1],b=$('recover');
+  b.hidden=false;b.textContent=`Recover unfinished recording from ${new Date(u.created*1000).toLocaleString()} (${(u.bytes/1e6).toFixed(1)} MB)`;
+  b.onclick=async()=>{b.hidden=true;sid=u.id;await fetch(`/api/session/${u.id}/finish`,{method:'POST'});watch(u.id)}});
 $('file').onchange=e=>e.target.files[0]&&send(e.target.files[0],e.target.files[0].name);
 const d=$('drop');d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');
 d.ondrop=e=>{e.preventDefault();d.classList.remove('over');const f=e.dataTransfer.files[0];f&&send(f,f.name)};
