@@ -33,6 +33,16 @@ def index():
     return send_from_directory(STATIC, "index.html")
 
 
+@app.get("/api/model/<path:name>")
+def model_status(name):
+    return jsonify(engine.model_status(name))
+
+
+@app.post("/api/model/<path:name>")
+def model_load(name):
+    return jsonify(engine.load_async(name))
+
+
 @app.get("/favicon.ico")
 def favicon():
     return "", 204
@@ -76,6 +86,7 @@ def transcribe():
 
 
 def main():
+    engine.load_async(os.environ.get("SCRIBE_MODEL", "large-v3-turbo"))  # start downloading immediately
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5055)))
 
 

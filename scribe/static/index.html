@@ -30,6 +30,7 @@ details{margin-top:20px}
   <label><input type="checkbox" id="stamps"> timestamps</label>
   <label>AI polish (Ollama model): <input id="llm" placeholder="e.g. llama3.1:8b" size="16"></label>
 </div>
+<div id="model-status" class="mut"></div>
 <div id="status" class="mut"></div>
 <textarea id="out" placeholder="Transcript appears here (editable)"></textarea>
 <div class="row"><button id="copy">Copy</button><button id="showraw">Show raw</button><span id="saved" class="mut"></span></div>
@@ -38,6 +39,19 @@ details{margin-top:20px}
   <textarea id="corr" style="min-height:160px"></textarea><div class="row"><button id="savecorr">Save</button></div></details>
 <script>
 const $=id=>document.getElementById(id);let rec,chunks,t0,tick,last={};
+let ready=false,poll;
+async function watchModel(){
+  clearInterval(poll);ready=false;const m=$('model').value,ms=$('model-status');
+  $('rec').disabled=true;
+  await fetch('/api/model/'+m,{method:'POST'});
+  const check=async()=>{const j=await (await fetch('/api/model/'+m)).json();
+    if($('model').value!==m)return;
+    if(j.status==='ready'){clearInterval(poll);ready=true;$('rec').disabled=false;ms.textContent='Model ready.'}
+    else if(j.status==='error'){clearInterval(poll);$('rec').disabled=false;ms.textContent='Model failed to load: '+j.error+' (check your internet connection; see the terminal)'}
+    else ms.textContent='Downloading/loading model… first run only (progress is in the terminal). Try the "small" model for a quicker start.'};
+  poll=setInterval(check,1500);check();
+}
+$('model').onchange=watchModel;watchModel();
 const status=s=>$('status').textContent=s;
 async function send(blob,name){
   status('Transcribing… (first run downloads the model)');

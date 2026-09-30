@@ -1,6 +1,7 @@
 """Speech-to-text backends: mlx-whisper on Apple Silicon, faster-whisper elsewhere. All local."""
 import os
 import platform
+import threading
 from dataclasses import dataclass
 
 MLX_MODELS = {"tiny": "mlx-community/whisper-tiny-mlx", "base": "mlx-community/whisper-base-mlx",
@@ -27,6 +28,42 @@ def _use_mlx() -> bool:
 
 
 _fw_cache = {}
+_state: dict[str, dict] = {}  # model -> {"status": idle|loading|ready|error, "error": str}
+_lock = threading.Lock()
+
+
+def ensure_model(model: str) -> None:
+    """Download (first time only) and load the model. Progress bars print to the terminal."""
+    if _use_mlx():
+        from huggingface_hub import snapshot_download
+        snapshot_download(MLX_MODELS.get(model, model))
+    else:
+        from faster_whisper import WhisperModel
+        from faster_whisper.utils import download_model
+        if model not in _fw_cache:
+            _fw_cache[model] = WhisperModel(download_model(model), compute_type="int8")
+
+
+def model_status(model: str) -> dict:
+    return dict(_state.get(model, {"status": "idle"}))
+
+
+def load_async(model: str) -> dict:
+    """Start loading in the background (once); poll model_status()."""
+    with _lock:
+        if _state.get(model, {}).get("status") in ("loading", "ready"):
+            return dict(_state[model])
+        _state[model] = {"status": "loading"}
+
+    def run():
+        try:
+            ensure_model(model)
+            _state[model] = {"status": "ready"}
+        except Exception as e:  # network down, disk full, unknown model…
+            _state[model] = {"status": "error", "error": str(e)}
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"status": "loading"}
 
 
 def transcribe(path: str, model: str = "large-v3-turbo", language: str | None = None,
@@ -38,9 +75,7 @@ def transcribe(path: str, model: str = "large-v3-turbo", language: str | None = 
         r = mlx_whisper.transcribe(path, path_or_hf_repo=MLX_MODELS.get(model, model), language=language,
                                    initial_prompt=prompt, condition_on_previous_text=False)
         return [Segment(s["start"], s["end"], s["text"].strip()) for s in r["segments"]]
-    from faster_whisper import WhisperModel
-    if model not in _fw_cache:
-        _fw_cache[model] = WhisperModel(model, compute_type="int8")
+    ensure_model(model)
     segs, _ = _fw_cache[model].transcribe(path, language=language, initial_prompt=prompt,
                                           vad_filter=True, condition_on_previous_text=False)
     return [Segment(s.start, s.end, s.text.strip()) for s in segs]
