@@ -1,0 +1,6 @@
+# wrong => right   (case-insensitive, whole words). Edit in the app or in ~/Transcripts/corrections.txt
+gonna => going to
+wanna => want to
+open ai => OpenAI
+chat gpt => ChatGPT
+mac book => MacBook
