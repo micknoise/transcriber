@@ -37,7 +37,7 @@ A second app in the same repo, tuned for low delay instead of accuracy-after-the
 ```
 
 1. In the presenter console, pick your microphone, press **Start captions**, and watch the level meter.
-2. Press **Open caption window** and drag it onto the projector / second screen (full-screen button in its toolbar), and/or let audience members open the **audience link** (QR code shown) on their own devices. Each viewer sets their own text size, colours (white, yellow, black-on-white, blue), number of lines and font; choices are remembered per device.
+2. Press **Open always-on-top window** and drag it onto the projector / second screen (full-screen button in its toolbar), and/or let audience members open the **audience link** (QR code shown) on their own devices. Chrome and Edge keep this window above other apps; unsupported browsers open a regular caption window instead. Each viewer sets their own text size, colours (white, yellow, black-on-white, blue), number of lines and font; choices are remembered per device.
 3. Put slide vocabulary in **Terms for this talk** (names, jargon, `wrong => right`) before you start; it is fed to Whisper and fixes casing/spelling in the captions.
 
 How it differs from the recorder: the browser streams raw 16 kHz audio (no container files, so delay doesn't grow over a two-hour lecture); an energy detector finds pauses, commits finished phrases, skips silence and stops Whisper inventing "Thank you." in quiet gaps; words appear as soon as about 0.5 s of speech has been heard and are firmed up at pauses. Expect roughly 1-2 s delay on Apple Silicon with `small.en`; use `base.en` if the Mac can't keep up (the console shows how long each update takes). Captions are appended to `~/Transcripts/captions_<time>.txt` as they finalise.

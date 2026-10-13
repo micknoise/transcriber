@@ -19,10 +19,10 @@ iframe{width:100%;height:210px;border:1px solid var(--line);border-radius:8px;ma
 #share{display:flex;gap:16px;align-items:center}#share img{width:120px;height:120px;background:#fff;border-radius:6px}
 </style></head><body>
 <h1>Live captions <span class="mut">— runs on this Mac</span></h1>
-<div class="mut">Start, then put the caption window on your projector / second screen, or share the link so people can read on their own devices.</div>
+<div class="mut">Start, then put the always-on-top caption window on your projector / second screen, or share the link so people can read on their own devices.</div>
 <div class="row">
   <button id="go" class="primary">Start captions</button>
-  <button id="pop">Open caption window</button>
+  <button id="pop" title="Requires Chrome or Edge for always-on-top mode">Open always-on-top window</button>
   <select id="mic" title="Microphone"></select>
   <span id="meter" title="Input level"><i></i></span>
 </div>
@@ -50,7 +50,25 @@ const status=s=>$('status').textContent=s;
 
 fetch('/api/info').then(r=>r.json()).then(i=>{
   if(i.lan){$('share').hidden=false;$('url').textContent=i.lan;$('qr').src='/qr.svg?u='+encodeURIComponent(i.lan)}else $('nolan').hidden=false});
-$('pop').onclick=()=>window.open('/view','captions','popup,width=1100,height=420');
+async function openCaptionWindow(){
+  if(!('documentPictureInPicture' in window)){
+    window.open('/view','captions','popup,width=1100,height=420');
+    status('Your browser does not support always-on-top windows; opened a regular caption window instead.');
+    return;
+  }
+  try{
+    const pip=await window.documentPictureInPicture.requestWindow({width:1100,height:420});
+    pip.document.title='Live captions';
+    pip.document.body.style.cssText='margin:0;overflow:hidden;background:#000';
+    const frame=pip.document.createElement('iframe');
+    frame.src='/view';frame.title='Live captions';frame.style.cssText='border:0;width:100vw;height:100vh';
+    pip.document.body.appendChild(frame);
+    status('Always-on-top caption window opened.');
+  }catch(e){
+    status('Could not open the always-on-top caption window: '+(e.message||e));
+  }
+}
+$('pop').onclick=openCaptionWindow;
 
 async function mics(){
   try{const d=(await navigator.mediaDevices.enumerateDevices()).filter(x=>x.kind==='audioinput'),cur=$('mic').value;
