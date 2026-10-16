@@ -41,15 +41,23 @@ iframe{width:100%;height:210px;border:1px solid var(--line);border-radius:8px;ma
 <div id="nolan" class="mut" hidden>Captions are only visible on this Mac. To share them with phones and laptops, restart with <code>./run-captions.sh --lan</code>.</div>
 <iframe id="preview" src="/view?embed=1" title="Caption preview"></iframe>
 <script>
+// Shortcuts: $ finds an element by id, sleep waits
 const $=id=>document.getElementById(id),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// State: audio objects, chunk number, send queue, and running flags
 let ctx,node,mstream,seq=0,q=[],sending=false,running=false,quietSince=0,wake=null,statT;
+// Restore the settings saved last time
 try{const s=JSON.parse(localStorage.getItem('capConsole')||'{}');['model','lang','terms'].forEach(k=>s[k]!=null&&($(k).value=s[k]))}catch(e){}
+// Save the settings in the browser
 const save=()=>{try{localStorage.setItem('capConsole',JSON.stringify({model:$('model').value,lang:$('lang').value,terms:$('terms').value}))}catch(e){}};
+// Save whenever a setting changes
 ['model','lang','terms'].forEach(k=>$(k).onchange=save);
+// Show a message in the status line
 const status=s=>$('status').textContent=s;
 
+// Ask the server for the audience link and show it with a QR code
 fetch('/api/info').then(r=>r.json()).then(i=>{
   if(i.lan){$('share').hidden=false;$('url').textContent=i.lan;$('qr').src='/qr.svg?u='+encodeURIComponent(i.lan)}else $('nolan').hidden=false});
+// Open the captions in an always-on-top window
 async function openCaptionWindow(){
   if(!('documentPictureInPicture' in window)){
     window.open('/view','captions','popup,width=1100,height=420');
@@ -68,15 +76,19 @@ async function openCaptionWindow(){
     status('Could not open the always-on-top caption window: '+(e.message||e));
   }
 }
+// Button opens the caption window
 $('pop').onclick=openCaptionWindow;
 
+// Fill the microphone list
 async function mics(){
   try{const d=(await navigator.mediaDevices.enumerateDevices()).filter(x=>x.kind==='audioinput'),cur=$('mic').value;
     $('mic').innerHTML='';d.forEach(x=>{const o=document.createElement('option');o.value=x.deviceId;o.textContent=x.label||'Microphone';$('mic').appendChild(o)});
     if(cur)$('mic').value=cur}catch(e){}
 }
+// Fill it now
 mics();
 
+// Download/load the chosen model and wait until it is ready
 async function ensureModel(){
   const m=$('model').value;await fetch('/api/model/'+m,{method:'POST'});
   while(true){const j=await (await fetch('/api/model/'+m)).json();
@@ -85,6 +97,7 @@ async function ensureModel(){
     $('modelstatus').textContent='Downloading/loading model… first run only (progress is in the terminal).';await sleep(1500)}
 }
 
+// Audio worklet: turns the mic into 16 kHz 16-bit chunks and measures loudness
 const WORKLET=`class P extends AudioWorkletProcessor{
 constructor(){super();this.r=sampleRate/16000;this.p=0;this.a=0;this.n=0;this.o=[];this.pk=0}
 process(i){const c=i[0][0];if(!c)return true;
@@ -94,6 +107,7 @@ if(this.o.length>=4000){const b=new Int16Array(this.o.length);for(let k=0;k<b.le
 this.port.postMessage({b:b.buffer,pk:this.pk},[b.buffer]);this.o=[];this.pk=0}return true}}
 registerProcessor('pcm',P)`;
 
+// Send queued audio chunks to the server in order, retrying on failure
 async function pump(){
   if(sending)return;sending=true;
   while(q.length){
@@ -105,6 +119,7 @@ async function pump(){
   sending=false;
 }
 
+// Start captioning: load model, open mic, start streaming
 async function start(){
   $('go').disabled=true;
   try{
@@ -130,11 +145,13 @@ async function start(){
     status('Captions running.');statT=setInterval(poll,1000);
   }catch(e){await stop('Could not start: '+(e.message||e))}
 }
+// Check the server once a second and show the status
 async function poll(){
   try{const j=await (await fetch('/api/captions')).json();
     if(j.error)status('Warning: '+j.error);
     else if(running)status(`Captions running.${j.infer?` Transcribing each update in ${j.infer}s.`:''}`)}catch(e){}
 }
+// Stop captioning and release the mic
 async function stop(msg){
   running=false;clearInterval(statT);$('meter').firstChild.style.width='0';
   try{node&&node.disconnect();mstream&&mstream.getTracks().forEach(t=>t.stop());ctx&&ctx.close();wake&&wake.release()}catch(e){}
@@ -142,8 +159,10 @@ async function stop(msg){
   while(sending&&q.length)await sleep(200);
   try{await fetch('/api/stop',{method:'POST'})}catch(e){}
   $('go').textContent='Start captions';$('go').className='primary';$('go').disabled=false;
-  status(msg||'Stopped. Transcript saved to ~/Transcripts.');
+  status(msg||'Stopped. Transcript saved to the transcriptions folder.');
 }
+// Start/stop button
 $('go').onclick=()=>running?stop():start();
+// Warn before leaving the page while running
 addEventListener('beforeunload',e=>{if(running){e.preventDefault();e.returnValue=''}});
 </script></body></html>

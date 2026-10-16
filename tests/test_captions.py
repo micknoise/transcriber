@@ -95,3 +95,10 @@ def test_control_endpoints_are_local_only_but_viewing_is_not(monkeypatch):
     assert c.get("/api/captions", environ_overrides=lan).status_code == 200
     assert c.get("/", environ_overrides=lan).status_code == 302  # audience gets redirected to the viewer
     assert c.get("/", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code == 200
+
+
+def test_autocorrect_cleans_text(tmp_path):
+    from scribe import autocorrect
+    rules = autocorrect.load_corrections(__import__("pathlib").Path("corrections.example.txt"))
+    out = autocorrect.clean("um so i i think open ai is gonna win .it works", rules)
+    assert "OpenAI" in out and "going to" in out and "um" not in out.split()

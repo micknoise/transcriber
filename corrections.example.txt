@@ -1,4 +1,4 @@
-# wrong => right   (case-insensitive, whole words). Edit in the app or in ~/Transcripts/corrections.txt
+# wrong => right   (case-insensitive, whole words). Edit in transcriptions/corrections.txt
 gonna => going to
 wanna => want to
 open ai => OpenAI

@@ -39,12 +39,17 @@ body.embed #bar,body.nobar #bar{display:none}
   <span id="conn" role="status"></span>
 </div>
 <script>
+// Shortcut for finding an element by id, and for the page body
 const $=id=>document.getElementById(id), body=document.body;
+// Read the page's URL options (?embed hides the toolbar)
 const Q=new URLSearchParams(location.search);
 if(Q.has('embed'))body.classList.add('embed');
+// Colour themes and line-count choices to cycle through
 const THEMES=['dark','yellow','light','blue'], LINES=[2,3,4,6,'all'];
+// Display settings, restored from the browser's saved copy
 let S={size:44,theme:'dark',lines:4,serif:false};
 try{Object.assign(S,JSON.parse(localStorage.getItem('captionPrefs')||'{}'))}catch(e){}
+// Apply the settings to the page and save them
 function apply(){
   body.dataset.theme=S.theme;body.classList.toggle('serif',!!S.serif);body.classList.toggle('all',S.lines==='all');
   document.documentElement.style.setProperty('--size',S.size+'px');
@@ -53,19 +58,23 @@ function apply(){
   try{localStorage.setItem('captionPrefs',JSON.stringify(S))}catch(e){}
   const l=$('log');l.scrollTop=l.scrollHeight;
 }
+// Toolbar buttons: change the setting, then re-apply
 $('smaller').onclick=()=>{S.size=Math.max(16,S.size-4);apply()};
 $('bigger').onclick=()=>{S.size=Math.min(160,S.size+4);apply()};
 $('theme').onclick=()=>{S.theme=THEMES[(THEMES.indexOf(S.theme)+1)%THEMES.length];apply()};
 $('lines').onclick=()=>{S.lines=LINES[(LINES.indexOf(S.lines)+1)%LINES.length];apply()};
 $('font').onclick=()=>{S.serif=!S.serif;apply()};
 $('full').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen?.();
+// Keyboard shortcuts: h hides the bar, + and - change size
 addEventListener('keydown',e=>{if(e.key==='h')body.classList.toggle('nobar');
   if(e.key==='+'||e.key==='=')$('bigger').click();if(e.key==='-')$('smaller').click();});
+// Apply the settings once at start
 apply();
 
 // Render incrementally (by absolute paragraph number) so screen readers only hear new text.
 const log=$('log'),els=new Map(),partialEl=document.createElement('p');
 partialEl.id='partial';partialEl.setAttribute('aria-hidden','true');
+// Draw the latest captions on the page
 function render(j){
   j.paras.forEach((t,k)=>{
     const i=j.first+k;let p=els.get(i);
@@ -79,7 +88,9 @@ function render(j){
   $('hint').textContent=(j.paras.length||j.partial)?'':(j.running?'Listening…':'Waiting for captions to start…');
   if(S.lines==='all')log.scrollTop=log.scrollHeight;
 }
+// v is the last version seen; fails counts failed requests
 let v=-1,fails=0;
+// Ask the server for new captions twice a second
 async function poll(){
   try{
     const r=await fetch('/api/captions?since='+v,{cache:'no-store'});const j=await r.json();
@@ -88,6 +99,8 @@ async function poll(){
   }catch(e){if(++fails>3)$('conn').textContent='Reconnecting…'}
   setTimeout(poll,500);
 }
+// Start polling
 poll();
+// Keep the screen awake while captions are showing
 try{const wl=()=>navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{});wl();document.addEventListener('visibilitychange',()=>{if(!document.hidden)wl()})}catch(e){}
 </script></body></html>
